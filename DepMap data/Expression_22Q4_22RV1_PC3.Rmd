@@ -1,0 +1,123 @@
+---
+title: "Analysis of the data from Expression Public 22Q4 for prostate cancer cell lines"
+author: "P. Vermonden"
+date: "1/18/2023"
+output:
+  html_document: # options pour sortie HTML
+    code_folding: hide  
+    collapsed: yes  
+    fig_caption: yes 
+    fig_height: 5 
+    fig_width: 6
+    highlight: tango
+    number_sections: yes
+    theme: united
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+  pdf_document: # options pour sorties pdf
+    toc: yes
+    toc_depth: '3'
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+# Installing libraries 
+knitr::opts_chunk$set(echo = TRUE)
+require(devtools)
+require(knitr) 
+require(pander) # Library for tables
+require(pls) # library pls Ron Wehrens
+require(MBXUCL) # Library MBX from ISBA-SMCS (UCLouvain)
+require(ropls) # Library o-pls E. Thevenot
+require(penalized) # Library to do ridge and lasso regression 
+require(ggplot2)
+require(readr)
+require(readxl)
+require(dplyr)
+```
+
+# Downloading data 
+Data taken out from DepMap, based on CCLE data on prostate cancer cell lines. 
+
+```{r data download}
+setwd("/Users/perrinevermonden/Desktop")
+# Importing excel file
+Datacell_lines <- read.csv(file = 'Expression_Public_22Q4_Subsetted.csv')
+# Adding the cell line names as column headlines
+Cell_lines <- c('X22RV1','LNCaP','PC3')
+row.names(Datacell_lines) <- Cell_lines
+# Transposing data table
+Datacell_lines_t <- t(Datacell_lines)
+Datacell_lines_t <- as.data.frame(Datacell_lines_t)
+Datacell_lines_t <- Datacell_lines_t[-1,]
+Datacell_lines_t <- add_rownames(Datacell_lines_t,var="Gene_names")
+```
+
+# Calculating fold changes
+
+Here, we calculate fold changes of gene expression. The fold change of 22RV1/PC3 allows finding genes which are more significantly expressed in 22RV1 cells and therefore, represent potential candidates for resistance. On the contrary, the fold change of PC3/22RV1 allows finding genes which are more significantly expressed in PC3 cells and therefore, represent potential candidates for sensitivity. 
+
+```{r fold changes}
+# Calcul of fold changes for 22RV1 and PC3 (either 22RV1/PC3 for resistance genes or PC3/22RV1 for sensitivity genes)
+Datacell_lines_t <- cbind(mutate(Datacell_lines_t, FCr=as.numeric(X22RV1)/as.numeric(PC3)))
+Datacell_lines_t <- cbind(mutate(Datacell_lines_t, FCs=as.numeric(PC3)/as.numeric(X22RV1)))
+# Filtrate for infinite values and NaN
+Expression_FCselect_resistance <- filter(Datacell_lines_t, FCr>=0 & FCr<50)
+Expression_FCselect_sensitivity <- filter(Datacell_lines_t,FCs>=0 & FCs<50)
+plot(x=Expression_FCselect_resistance$X22RV1,y=Expression_FCselect_resistance$FCr)
+plot(x=Expression_FCselect_sensitivity$PC3,y=Expression_FCselect_sensitivity$FCs)
+
+```
+
+# Selecting the resistance and sensitivity genes
+Only the genes which have a not too low value at the denominator is above 0.1 and the fold change above 2. Then, the list of genes is compared to a pre-made list containing all the genes reported in GSEA pathways involved in ferroptosis, lipid metabolism, glutathione synthesis and epithelial-to-mesenchymal transition (from Broad Institute website). The genes which are found in both are selected and further analysed. 
+
+```{r Resistance and sensitivity selections}
+# Expression_resistance is a table gathering all the genes that 22RV1 cells express at higher levels than PC3 cells, potentially involved in cell resistance 
+Expression_resistance <- filter(Expression_FCselect_resistance,FCr>2 & PC3>0.1)
+Expression_resistance <- arrange(Expression_resistance,desc(FCr))
+plot(x=Expression_resistance$X22RV1,y=Expression_resistance$FCr)
+
+# Expression_sensitivity is a table gathering all the genes that PC3 cells express at higher levels than 22RV1 cells, potentially involved in cell sensitivity
+Expression_sensitivity <- filter(Expression_FCselect_sensitivity,FCs>2 & X22RV1>0.1)
+Expression_sensitivity <- arrange(Expression_sensitivity,desc(FCs))
+plot(x=Expression_sensitivity$PC3,y=Expression_sensitivity$FCs)
+
+# Selecting the genes from GSEA data bases 
+setwd("/Users/perrinevermonden/Desktop")
+Gene_selection <- read.csv(file='GSEA_selection_PLA.csv', col.names = 'Gene_names')
+Gene_selection <- t(Gene_selection)
+
+Expression_resistance_selection <- Expression_resistance[is.element(Expression_resistance$Gene_names,Gene_selection),]
+
+Expression_sensitivity_selection <- Expression_sensitivity[is.element(Expression_sensitivity$Gene_names,Gene_selection),]
+
+# Exporting the final table of data with selected candidates 
+write_csv(Expression_resistance_selection,file="Resistance expression data on 22RV1 and PC3 cells based on GSEA selection")
+write_csv(Expression_sensitivity_selection,file="Sensitivity expression data on 22RV1 and PC3 cells based on GSEA selection")
+```
+
+```{r graphiques}
+# For visualisation, creating a table that identifies the genes in the list as either resistance (R), sensitivity (S) or neutral (N)
+Expression_resistance <- cbind(mutate(Expression_resistance, Selection=is.element(Expression_resistance$Gene_names,Gene_selection)))
+
+Expression_resistance$Selection <- gsub(TRUE, "R",gsub(FALSE, "N",Expression_resistance$Selection))
+
+Expression_sensitivity <- cbind(mutate(Expression_sensitivity,Selection=is.element(Expression_sensitivity$Gene_names,Gene_selection)))
+
+Expression_sensitivity$Selection <- gsub(TRUE,"S",gsub(FALSE,"N",Expression_sensitivity$Selection))
+
+# Table with all genes with corresponding annotations (R, N or S)
+Expression <- bind_rows(Expression_sensitivity,Expression_resistance)
+
+# Chart of expression with overlay for elements highlighted from Expression_resistance_selection and Expression_sensitivity_selection in 22RV1 and PC3 cells 
+a <- ggplot(data=Expression,aes(x=X22RV1,y=FCr,colour=Selection)) + geom_point() + scale_color_manual(values=c('#999999','#660000','006699')) + scale_size_manual(values=c(2,4,6))
+
+print(a)
+
+b <- ggplot(data=Expression,aes(x=PC3,y=FCs,colour=Selection)) + geom_point() + scale_color_manual(values=c('#999999','#660000','006699')) + scale_size_manual(values=c(2,4,6))
+
+print(b)
+```
+
