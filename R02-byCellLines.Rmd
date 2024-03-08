@@ -1,0 +1,1141 @@
+---
+author: "Manon Martin"
+date: '`r format(Sys.time(), "%B %d, %Y")`'
+output: 
+  html_document:
+    smart: FALSE
+    code_folding: hide
+    collapsed: yes
+    fig_caption: yes
+    highlight: tango
+    number_sections: yes
+    theme: lumen
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+# clear the environment ===============
+rm(list=ls())
+
+final_trans <- "log"
+# what_data <- "breast"
+what_data <- "prostate"
+```
+
+---
+title: "R02 - eda `r what_data` data"
+---
+
+```{r setup, include=FALSE}
+# specify knitr options -----------------------
+knitr::opts_chunk$set(echo = TRUE)
+
+# load packages -----------------------
+
+# packages from CRAN
+library(ggplot2)
+library(dplyr)
+library(SummarizedExperiment)
+library(tidyverse)
+library(ggrepel)
+library(pander)
+library(QFeatures)
+library(missMDA)
+library(tidyverse)
+library(gplots)
+library(readxl)
+library(missMDA)
+library(dplyr)
+library(factoextra)
+library(missMDA)
+library("FactoMineR")
+library(ComplexHeatmap)
+library(viridis)
+library(plotly)
+library(xlsx)
+library(caret)
+library(randomForest)
+library(glmnet)
+library(readr)
+library(knitr) 
+library(UpSetR)
+library(proDA)
+library(limma)
+library(patchwork)
+library(lipidr)
+library(missForest)
+library(doParallel)
+library(clusterProfiler)
+library(Vennerable)
+library("GGally")
+```
+
+# Notes
+
+- Data processing
+  + data are log transformed
+  + different normalisations tried (no normalisation and mean normalisation)
+
+- data exploration (PCA on common lipids with imputed values)
+
+- differential expression analysis
+  + proDA for DEA (no imputation, takes into account missing values)
+
+
+- enrichment analysis (ORA)
+
+## Questions/remarks
+
+- order of the samples prep and repetition?
+- what are the comparisons of interest?
+- what are the lipid sets to use for enrichment?
+- "housekeeping" lipids for normalisation?
+
+
+## Current set-up
+
+
+```{r setup2}
+pander("what data")
+what_data
+
+# pander("final transformation")
+# final_trans
+```
+
+# Data importation and processing
+
+## Data importation
+
+```{r}
+assay_data = read.csv(paste0("data/0192CE_FTMS only_2022-10-19_",
+                              what_data,"_assay.csv"),
+                      check.names =FALSE, row.names = 1)
+
+col_data = read.csv(paste0("data/0192CE_FTMS only_2022-10-19_",
+                              what_data,"_colData.csv"),
+                      check.names =FALSE, row.names = 1)
+
+row_data = read.csv(paste0("data/0192CE_FTMS only_2022-10-19_",
+                              what_data,"_rowData.csv"),
+                    check.names =FALSE, row.names = 1)
+
+identical(rownames(assay_data), rownames(row_data))
+identical(colnames(assay_data),rownames(col_data))
+se_Species <- SummarizedExperiment(assays = as.matrix(assay_data),
+                               rowData = row_data,
+                               colData = col_data)
+```
+
+## Lipid sets
+
+```{r}
+# annotation with lipidr: "class", "length", "unsat"
+# lipidr::gen_lipidsets(rownames(dat_Species), min_size = 2)
+```
+
+Lipid class
+
+```{r}
+table(rowData(se_Species)$Lipid_Class)
+```
+
+
+# Inspect the data characteristics
+
+Design of experiment
+```{r}
+df <- colData(se_Species)
+table(df$Cell.Line)
+table(df$Treatment)
+
+table(df$Cell.Line, df$Treatment)
+
+pander(what_data)
+df %>% as.data.frame() %>%
+  group_by(Cell.Line, Treatment)%>%
+  summarise(n=n())%>%
+  spread(Treatment, n)
+```
+
+## Filter the data (select `prostate` or `breast`)
+
+
+```{r}
+cd <- colData(se_Species) %>% 
+  as.data.frame() %>%
+  rownames_to_column() 
+
+samples_selected <- cd$rowname[cd$g_cell_lines==what_data]
+
+# colors for heatmap
+Repetition_col <- c("1" = "firebrick", "2" = "darkgreen", "3" = "blue")
+
+Lipid_Class_col <- c("brown", "brown1", "chocolate1", "orange", "gold",
+                     "olivedrab1", "olivedrab", "limegreen","mediumseagreen",
+                     "cadetblue1",  "darkcyan", "blue","darkblue",
+                     "darkviolet", "deeppink") 
+set.seed(1)
+Lipid_Class_col <- sample(Lipid_Class_col, size = length(Lipid_Class_col))
+names(Lipid_Class_col) <- unique(rowData(se_Species)$Lipid_Class)
+
+if(what_data=="prostate"){
+  Cell.Line_col = c("22RV1" = "red","LNCaP" = "blue", "PC3" = "green")
+  se_Species$Treatment <- factor(se_Species$Treatment, 
+                                 levels = c("Control", "ALA10", 
+                                            "Fer1_3", "PunA2.5", "PunA5",
+                                            "PunA10", "PunA10_fer13"))
+  Treatment_col = c("Control" = "red", "ALA10" ="green" ,
+                    "Fer1_3" = "goldenrod2",
+                    "PunA2.5" = "darkturquoise", "PunA5" = "dodgerblue", 
+                    "PunA10" = "dodgerblue4", "PunA10_fer13" = "darkorchid3")
+  
+  }else{
+    Cell.Line_col = c("Hs578T" = "red","MCF7" = "blue")
+      se_Species$Treatment <- factor(se_Species$Treatment, 
+                                 levels = c("Control", "ALA", "Fer1_10", 
+                                            "JA10", "PunA5", "PunA10", 
+                                            "PunA20", "PunA20_Fer110" ))
+      Treatment_col = c("Control" = "red", "ALA"="green",
+                    "Fer1_10" = "goldenrod2", "JA10" = "palevioletred1", 
+                    "PunA5" = "darkturquoise", "PunA10"= "dodgerblue", 
+                                            "PunA20" = "dodgerblue4", 
+                    "PunA20_Fer110" = "darkorchid3")
+  }
+
+# filter out only NA lipids
+se_Species <- filterNA(se_Species, pNA = 0.99)
+dim(se_Species)
+```
+
+
+# se_Species
+
+## Deal with missing values
+
+## Describe missing data present in the dataset
+
+```{r}
+barplot_fun <- function(varOfInterest,ncol=1){
+  se_Species$nNA <- nNA(se_Species)$nNAcols
+  names(se_Species$nNA$pNA) <- colnames(se_Species)
+  
+  id <- order(colData(se_Species)[,varOfInterest])
+  cols <- rainbow(n = length(unique(colData(se_Species)[,varOfInterest])))[as.factor(colData(se_Species)[id,varOfInterest])]
+  par(mar=c(7,4,2,2))
+  barplot(se_Species$nNA$pNA[id], las=2, ylim = c(0,100), 
+          ylab = "% missing values",
+                main = "% missing values per sample",
+          col = cols)
+  legend("top",
+         legend=unique(colData(se_Species)[id,varOfInterest]),
+         cex = 0.7,
+         fill = unique(cols),
+         bty="n", horiz = FALSE, xpd=TRUE, 
+         inset=c(-0.1,0), ncol = ncol)
+  
+  par(mar=c(4,4,4,4))
+      
+}
+barplot_fun("Cell.Line")
+barplot_fun("Treatment", ncol=3)
+```
+
+
+```{r}
+X <- assay(se_Species) %>% as.matrix()
+X <- is.na(X)
+ord <- order(rowSums(X))
+X <- matrix(as.numeric(X), ncol = ncol(X))
+X2 <- X[ord,]
+
+cd <- colData(se_Species)
+rd <-  rowData(se_Species)
+rd2 <-  rowData(se_Species)[ord,]
+
+column_ha = HeatmapAnnotation(Cell.Line = cd$Cell.Line, 
+                              col = list(Cell.Line = Cell.Line_col))
+
+row_ha = rowAnnotation(Lipid_Class = as.factor(rd$Lipid_Class), 
+                       col = list(Lipid_Class = Lipid_Class_col))
+row_ha2 = rowAnnotation(Lipid_Class = as.factor(rd2$Lipid_Class), 
+                       col = list(Lipid_Class = Lipid_Class_col))
+set.seed(2024)
+Heatmap(X2, name = "NA values", cluster_rows = FALSE, 
+        cluster_columns = FALSE,
+        top_annotation = column_ha, 
+        right_annotation = row_ha2,
+        col = c("black","white"),
+    column_title = "Missing values",
+    row_names_gp = gpar(fontsize = 5),
+    column_names_gp = gpar(fontsize = 6))
+
+
+X <- assay(se_Species) %>% as.matrix()
+X2 <- X[ord,]
+set.seed(2024)
+Heatmap(X, name = "raw values", cluster_rows = FALSE, 
+        cluster_columns = FALSE,
+        top_annotation = column_ha, 
+        right_annotation = row_ha,
+        col = rev(inferno(20)),
+    column_title = "raw values", na_col = "white",
+    row_names_gp = gpar(fontsize = 5),
+    column_names_gp = gpar(fontsize = 6))
+
+set.seed(2024)
+Heatmap(log2(X), name = "log values", cluster_rows = FALSE, 
+        cluster_columns = FALSE,
+        top_annotation = column_ha, 
+        right_annotation = row_ha,
+        col = viridis(20),
+    column_title = "log values", na_col = "white",
+    row_names_gp = gpar(fontsize = 5),
+    column_names_gp = gpar(fontsize = 6))
+```
+
+Heatmap by cell line
+
+```{r}
+
+for (i in levels(se_Species$Cell.Line)){
+  ids = se_Species$Cell.Line==i
+  X <- assay(se_Species)[,ids] %>% as.matrix()
+  cd <- colData(se_Species)[ids,] 
+  ord = order(cd$Treatment)
+  rd <-  rowData(se_Species)
+  
+  X2 = X[,ord]
+  cd2 <- cd[ord,]
+  row_ha = rowAnnotation(Lipid_Class = as.factor(rd$Lipid_Class), 
+                         col = list(Lipid_Class = Lipid_Class_col))
+  
+  column_ha = HeatmapAnnotation(Treatment = cd2$Treatment, 
+                                Repetition = cd2$Repetition,
+                                col = list(Treatment = Treatment_col, 
+                                           Repetition = Repetition_col))
+  
+  ht <- Heatmap(log2(X2), name = "log values", cluster_rows = FALSE, 
+          cluster_columns = FALSE,
+          left_annotation = row_ha,
+          top_annotation = column_ha,
+          clustering_method_rows = "ward.D2",
+          clustering_method_columns = "ward.D2",
+          col = viridis(20),
+      column_title = paste0(i, " - no clustering"), 
+      na_col = "white",
+      row_names_gp = gpar(fontsize = 5),
+      column_names_gp = gpar(fontsize = 6))
+  print(ht)
+  ht <- Heatmap(log2(X2), name = "log values", 
+          cluster_rows = FALSE, 
+          cluster_columns = TRUE,
+          left_annotation = row_ha,
+          top_annotation = column_ha,
+          clustering_method_rows = "ward.D2",
+          clustering_method_columns = "ward.D2",
+          col = viridis(20),
+      column_title = paste0(i, " - clustering of the samples"), 
+      na_col = "white",
+      row_names_gp = gpar(fontsize = 5),
+      column_names_gp = gpar(fontsize = 6))
+  print(ht)
+}
+
+```
+
+
+## Missing values by lipid class
+
+```{r}
+df <- assay(se_Species) %>% 
+  as.data.frame() %>% 
+  rownames_to_column() %>%
+  left_join(rownames_to_column(
+    as.data.frame(rowData(se_Species))[,"Lipid_Class", 
+                                           drop=FALSE])) %>%
+  pivot_longer(-c(rowname, Lipid_Class))
+
+
+df$Lipid_Class <- gsub(" ","", df$Lipid_Class)
+
+na_lip_group <- df %>% group_by(Lipid_Class) %>%
+  summarise(pc=sum(is.na(value))*100/n(), 
+            nmiss = sum(is.na(value)), tot = n())
+na_lip_group$prop <- paste0(na_lip_group$nmiss,"/", 
+                            na_lip_group$tot)
+
+ggplot(na_lip_group, aes(y=pc, x=Lipid_Class)) + 
+    geom_bar(position="dodge", stat="identity")+
+  ylab("proportion of missing values (%)") + 
+  theme(axis.text.x = element_text(angle = 90, 
+                                   vjust = 0.5, hjust=1))
+
+pander(na_lip_group)
+
+```
+
+## Filter out lipids with too many missing values
+
+```{r}
+res_nNA <- nNA(se_Species)
+hist(res_nNA$nNArows$pNA, main = "Frequency of missing values")
+
+pander("removed features")
+df <- res_nNA$nNArows %>% as.data.frame() %>% 
+  dplyr::filter(pNA > 0.70)
+
+X <- assay(se_Species[df$name,]) %>% as.matrix()
+cd <- colData(se_Species)
+ord <- cd %>% as.data.frame() %>% rownames_to_column() %>% 
+  arrange(Cell.Line, Treatment) %>% pull(rowname)
+X <- X[,ord]
+cd <- cd[ord,]
+rd <-  rowData(se_Species)[df$name,]
+
+row_ha = rowAnnotation(Lipid_Class = as.factor(rd$Lipid_Class), 
+                         col = list(Lipid_Class = Lipid_Class_col))
+  
+column_ha = HeatmapAnnotation(Treatment = cd$Treatment, 
+                              Cell.Line = cd$Cell.Line,
+                                col = list(Treatment = Treatment_col,
+                                           Cell.Line = Cell.Line_col))
+
+col1 = circlize::colorRamp2(seq(min(log2(assay(se_Species,1)), na.rm=TRUE), 
+                      max(log2(assay(se_Species,1)), na.rm=TRUE), length = 20), 
+                  viridis(20))
+
+
+Heatmap(log2(X), name = "log values", cluster_rows = FALSE, 
+          cluster_columns = FALSE,
+          left_annotation = row_ha,
+          top_annotation = column_ha,
+          clustering_method_rows = "ward.D2",
+          clustering_method_columns = "ward.D2",
+          col = col1,
+      column_title = "Filtered out lipids", 
+      na_col = "white",
+      row_names_gp = gpar(fontsize = 5),
+      column_names_gp = gpar(fontsize = 6))
+```
+
+
+```{r}
+# filter out
+se_Species <- QFeatures::filterNA(se_Species, pNA = 0.7)
+se_Species
+```
+
+
+# Data distribution and transformation
+
+## Processing
+
+```{r}
+## -----------------------------------
+## log transformation
+assay(se_Species,2) <- assay(logTransform(se_Species))
+names(assays(se_Species)) <- c("raw","log")
+```
+
+```{r}
+assays(se_Species)$raw %>% as.data.frame()  %>% 
+  rownames_to_column() %>% pivot_longer(-rowname) %>%
+  group_by(rowname) %>% 
+  mutate(mean_val = mean(value, na.rm=TRUE)) %>%
+  ggplot(aes(x=mean_val, y = value)) + 
+  geom_point(alpha=0.3)+ ggtitle("raw")
+
+assays(se_Species)$log %>% as.data.frame()  %>% 
+  rownames_to_column() %>% pivot_longer(-rowname) %>%
+  group_by(rowname) %>% 
+  mutate(mean_val = mean(value, na.rm=TRUE)) %>%
+  ggplot(aes(x=mean_val, y = value)) + 
+  geom_point(alpha=0.3) + ggtitle("log")
+```
+
+
+## Normalize
+
+
+Normalisation method: `center.median`
+
+```{r, eval=TRUE}
+## center.median
+# library(MsCoreUtils)
+
+log_vals = assays(se_Species)[["log"]]
+log_vals_complete = na.omit(log_vals)
+# log_vals_complete = log_vals
+cM = matrixStats::colMedians(log_vals_complete, na.rm=TRUE)
+assays_se = assays(se_Species)[["log"]]
+
+for (i in 1:ncol(se_Species)){
+  assays_se[,i] <- assays(se_Species)[["log"]][,i] - cM[i]
+}
+
+boxplot(assays_se)
+
+# replace normalised assay
+assays(se_Species)$logNorm <- assays_se
+```
+
+
+
+## Save the data
+
+```{r}
+write.xlsx(assays(se_Species)$raw, 
+           file = paste0("processed_data/R02_",what_data,".xlsx"),
+           sheetName = "assay_raw",append = FALSE)
+write.xlsx(assays(se_Species)$log, 
+           file = paste0("processed_data/R02_",what_data,".xlsx"),
+           sheetName = "assay_log2",append = TRUE)
+# write.xlsx(assays(se_Species)$logNorm, 
+#            file = paste0("processed_data/R02_",what_data,".xlsx"),
+#            sheetName = "assay_logNorm",append = TRUE)
+write.xlsx(colData(se_Species), 
+           file = paste0("processed_data/R02_",what_data,".xlsx"),
+           sheetName = "colData",append = TRUE)
+write.xlsx(rowData(se_Species), 
+           file = paste0("processed_data/R02_",what_data,".xlsx"),
+           sheetName = "rowData",append = TRUE)
+
+# write.csv(assays(se_Species)$raw, 
+#           file = paste0("processed_data/R02_",what_data,"_assay_raw.csv"))
+# write.csv(assays(se_Species)$log, 
+#           file = paste0("processed_data/R02_",what_data,"_assay_log.csv"))
+# write.csv(assays(se_Species)$logNorm, 
+#           file = paste0("processed_data/R02_",what_data,"_assay_logNorm.csv"))
+# write.csv(colData(se_Species), 
+#           file = paste0("processed_data/R02_",what_data,"_colData.csv"))
+# write.csv(rowData(se_Species), 
+#           file = paste0("processed_data/R02_",what_data,"_rowData.csv"))
+```
+
+
+```{r}
+limma::plotDensities(assay(se_Species,1),legend = FALSE, 
+                     main = names(assays(se_Species))[1])
+limma::plotDensities(assay(se_Species,2),legend = FALSE, 
+                     main = names(assays(se_Species))[2], 
+                     col = as.numeric(as.factor(colData(se_Species)$Cell.Line)))
+
+limma::plotDensities(assay(se_Species,3),legend = FALSE, 
+                     main = names(assays(se_Species))[3], 
+                     col = as.numeric(as.factor(colData(se_Species)$Cell.Line)))
+
+boxplot(assay(se_Species,1), main = names(assays(se_Species))[1])
+boxplot(assay(se_Species,2), main = names(assays(se_Species))[2])
+boxplot(assay(se_Species,3), main = names(assays(se_Species))[3])
+```
+
+
+## Final data
+
+We decide here to work with log transformed data that are not normalised.
+
+
+```{r}
+se <- se_Species 
+
+save(se, file = paste0("processed_data/R02_se_",what_data,".rda"))
+```
+
+# PCA
+
+```{r, include=FALSE}
+PCA_eval <- TRUE
+```
+
+## Based on all the lipids
+
+```{r, eval=PCA_eval}
+# based on observed lipids across all cell lines
+cd = colData(se) %>% as.data.frame() %>% 
+  rownames_to_column("name")
+rd <- rowData(se) %>% as.data.frame() %>% 
+  rownames_to_column("name")
+
+se_filtered = se
+rd_filtered <- rd
+
+# log
+dat_pca <- t(assays(se_filtered)$log)
+
+if (sum(is.na(dat_pca)) > 0){
+  # impute missing values 
+  message('imputing missing values for PCA')
+  nb = estim_ncpPCA(dat_pca,ncp.max=5)
+  print("criterion: ")
+  print(nb$criterion)
+  print("ncp: ")
+  print(nb$ncp)
+  res.imp = imputePCA(dat_pca,ncp=nb$ncp, scale=FALSE)
+  dat_pca <- res.imp$completeObs
+}
+
+# pareto scaling
+for (i in 1:ncol(dat_pca)){
+  dat_pca[,i] = dat_pca[,i]/sqrt(sd(dat_pca[,i]))
+}
+
+res_pca <- dat_pca %>%
+    prcomp(scale = FALSE, center = TRUE) 
+
+
+# screeplot
+res_pca %>% fviz_screeplot()
+
+```
+
+### scores
+
+```{r, eval=PCA_eval}
+res_pca %>%
+    fviz_pca_ind(habillage = se_filtered$Cell.Line, 
+                 title = "PCA scores",
+                 axes = c(1,2), label="none", addEllipses = TRUE,
+                 pointsize = 2.5)
+
+
+data.frame(res_pca$x, Cell.Line = se_filtered$Cell.Line,
+           Treatment = se_filtered$Treatment, 
+           Repetition = se_filtered$Repetition) %>%
+  ggplot(aes(x = PC1, y = PC2, 
+               shape = Cell.Line, color = Repetition))+
+  geom_point() + theme_bw()
+
+
+res_pca %>%
+    fviz_pca_ind(habillage = se_filtered$Treatment, 
+                 title = "PCA scores",
+                 axes = c(1,2), label="none", addEllipses = FALSE,
+                 pointsize = 2.5)
+
+res_pca %>%
+    fviz_pca_ind(habillage = se_filtered$Cell.Line, 
+                 title = "PCA scores",
+                 axes = c(3,4), label="none", addEllipses = FALSE,
+                 pointsize = 2.5)
+
+
+
+res_pca %>%
+    fviz_pca_ind(habillage = se_filtered$Treatment, 
+                 title = "PCA scores",
+                 axes = c(3,4), label="none", addEllipses = FALSE,
+                 pointsize = 2.5)
+
+
+res_pca %>%
+    fviz_pca_ind(habillage = se_filtered$Treatment, 
+                 title = "PCA scores",
+                 axes = c(5,6), label="none", addEllipses = FALSE,
+                 pointsize = 2.5)
+
+res_pca %>%
+    fviz_pca_ind(habillage = se_filtered$Treatment, 
+                 title = "PCA scores",
+                 axes = c(7,8), label="none", addEllipses = FALSE,
+                 pointsize = 2.5)
+
+```
+
+
+
+### loadings
+
+
+```{r, eval=PCA_eval}
+
+res_pca %>%
+  fviz_pca_var(axes = c(1,2),
+               geom = "point")
+res_pca %>%
+  fviz_pca_var(axes = c(3,4),
+               geom = "point")
+res_pca %>%
+  fviz_pca_var(axes = c(5,6),
+               geom = "point")
+
+p <- data.frame(res_pca$rotation, rd_filtered) %>% 
+  ggplot(aes(x = PC1, y = PC2, 
+             color = Lipid_Class, 
+             label = name)) + geom_point() +
+  scale_color_manual(values = Lipid_Class_col) 
+ggplotly(p)
+
+p <- data.frame(res_pca$rotation, rd_filtered) %>% 
+  ggplot(aes(x = PC3, y = PC4, 
+             color = Lipid_Class, 
+             label = name)) + geom_point() +
+  scale_color_manual(values = Lipid_Class_col) 
+ggplotly(p)
+
+p <- data.frame(res_pca$rotation, rd_filtered) %>% 
+  ggplot(aes(x = PC5, y = PC6, 
+             color = Lipid_Class, 
+             label = name)) + geom_point() +
+  scale_color_manual(values = Lipid_Class_col) 
+ggplotly(p)
+
+```
+
+
+
+## Based on observed lipids across all cell lines.
+
+```{r pca, eval=PCA_eval}
+# based on observed lipids across all cell lines
+cd = colData(se) %>% as.data.frame() %>% 
+  rownames_to_column("name")
+rd <- rowData(se) %>% as.data.frame() %>% 
+  rownames_to_column("name")
+
+dat = assays(se)$log %>% as.data.frame() %>% 
+  rownames_to_column() %>% 
+  pivot_longer(-rowname, names_to = "name") %>%
+  left_join(cd, by="name") %>% 
+  dplyr::group_by(rowname, Cell.Line) %>%
+  summarize(sumnoNA = sum(!is.na(value)))
+
+names_filter = unique(dat$rowname[dat$sumnoNA==0])
+table(dat$sumnoNA)
+
+se_filtered = se[!rownames(se) %in% names_filter,]
+rd_filtered <- rd[!rownames(se) %in% names_filter,]
+
+# log
+dat_pca <- t(assays(se_filtered)$log)
+
+if (sum(is.na(dat_pca)) > 0){
+  # impute missing values 
+  message('imputing missing values for PCA')
+  nb = estim_ncpPCA(dat_pca,ncp.max=5)
+  print("criterion: ")
+  print(nb$criterion)
+  print("ncp: ")
+  print(nb$ncp)
+  res.imp = imputePCA(dat_pca,ncp=nb$ncp, scale=FALSE)
+  dat_pca <- res.imp$completeObs
+}
+
+# pareto scaling
+for (i in 1:ncol(dat_pca)){
+  dat_pca[,i] = dat_pca[,i]/sqrt(sd(dat_pca[,i]))
+}
+res_pca <- dat_pca %>%
+    prcomp(scale = FALSE, center = TRUE) 
+
+# screeplot
+res_pca %>% fviz_screeplot()
+
+```
+
+### scores
+
+```{r, eval=PCA_eval}
+res_pca %>%
+    fviz_pca_ind(habillage = se_filtered$Cell.Line, 
+                 title = "PCA scores",
+                 axes = c(1,2), label="none", addEllipses = TRUE,
+                 pointsize = 2.5)
+
+
+data.frame(res_pca$x, Cell.Line = se_filtered$Cell.Line,
+           Treatment = se_filtered$Treatment, 
+           Repetition = se_filtered$Repetition) %>%
+  ggplot(aes(x = PC1, y = PC2, 
+               shape = Cell.Line, color = Repetition))+
+  geom_point() + theme_bw()
+
+
+res_pca %>%
+    fviz_pca_ind(habillage = se_filtered$Treatment, 
+                 title = "PCA scores",
+                 axes = c(1,2), label="none", addEllipses = FALSE,
+                 pointsize = 2.5)
+
+res_pca %>%
+    fviz_pca_ind(habillage = se_filtered$Cell.Line, 
+                 title = "PCA scores",
+                 axes = c(3,4), label="none", addEllipses = FALSE,
+                 pointsize = 2.5)
+
+
+
+res_pca %>%
+    fviz_pca_ind(habillage = se_filtered$Treatment, 
+                 title = "PCA scores",
+                 axes = c(3,4), label="none", addEllipses = FALSE,
+                 pointsize = 2.5)
+
+
+res_pca %>%
+    fviz_pca_ind(habillage = se_filtered$Treatment, 
+                 title = "PCA scores",
+                 axes = c(5,6), label="none", addEllipses = FALSE,
+                 pointsize = 2.5)
+
+res_pca %>%
+    fviz_pca_ind(habillage = se_filtered$Treatment, 
+                 title = "PCA scores",
+                 axes = c(7,8), label="none", addEllipses = FALSE,
+                 pointsize = 2.5)
+
+```
+
+
+
+### loadings
+
+
+```{r, eval=PCA_eval}
+
+res_pca %>%
+  fviz_pca_var(axes = c(1,2),
+               geom = "point")
+res_pca %>%
+  fviz_pca_var(axes = c(3,4),
+               geom = "point")
+res_pca %>%
+  fviz_pca_var(axes = c(5,6),
+               geom = "point")
+
+p <- data.frame(res_pca$rotation, rd_filtered) %>% 
+  ggplot(aes(x = PC1, y = PC2, 
+             color = Lipid_Class, 
+             label = name)) + geom_point() +
+  scale_color_manual(values = Lipid_Class_col) 
+ggplotly(p)
+
+p <- data.frame(res_pca$rotation, rd_filtered) %>% 
+  ggplot(aes(x = PC3, y = PC4, 
+             color = Lipid_Class, 
+             label = name)) + geom_point() +
+  scale_color_manual(values = Lipid_Class_col) 
+ggplotly(p)
+
+p <- data.frame(res_pca$rotation, rd_filtered) %>% 
+  ggplot(aes(x = PC5, y = PC6, 
+             color = Lipid_Class, 
+             label = name)) + geom_point() +
+  scale_color_manual(values = Lipid_Class_col) 
+ggplotly(p)
+
+```
+
+# Missing lipids between cell lines
+
+FIXME: to do, heatmap with appropriate scale
+```{r}
+se_filtered2 = se[names_filter,]
+X <- assays(se_filtered2)$log %>% as.matrix()
+# X <- is.na(X)
+
+ord <- order(rowSums(is.na(X[,1:3])))
+X <- matrix(as.numeric(X), ncol = ncol(X))
+# X <- X[ord,]
+
+cd <- colData(se_filtered2)
+rd <-  rowData(se_filtered2)[ord,] 
+
+
+column_ha = HeatmapAnnotation(Cell.Line = cd$Cell.Line, 
+                              Treatment = cd$Treatment,
+                              col = list(Cell.Line = Cell.Line_col,
+                                         Treatment = Treatment_col))
+Lipid_Class_col <- rainbow(nlevels(as.factor(rd$Lipid_Class)))
+names(Lipid_Class_col) <- levels(as.factor(rd$Lipid_Class))
+row_ha = rowAnnotation(Lipid_Class = as.factor(rd$Lipid_Class), 
+                       col = list(Lipid_Class = Lipid_Class_col))
+
+col1 = circlize::colorRamp2(seq(min(assays(se)$log, na.rm=TRUE), 
+                      max(assays(se)$log, na.rm=TRUE), length = 20), 
+                  viridis(20))
+
+set.seed(2024)
+Heatmap(X, name = "log values", cluster_rows = FALSE, 
+        cluster_columns = FALSE,
+        top_annotation = column_ha, 
+        right_annotation = row_ha,
+        col = col1,na_col = "white",
+    column_title = "lipids missing in one of the cell line",
+    row_names_gp = gpar(fontsize = 5),
+    column_names_gp = gpar(fontsize = 6))
+```
+
+
+# DEA by cell lines
+
+Differential expression analysis by  cell lines
+
+```{r}
+se_list <- list()
+for (i in unique(se$Cell.Line)){
+  se_list[[i]] <- se[,se$Cell.Line == i]
+  # remove features completely missing
+  id_na <- which(rowSums(is.na(assays(se_list[[i]])$log))==ncol(se_list[[i]]))
+  se_list[[i]] <- se_list[[i]][-id_na,]
+}
+```
+
+
+- regression with `proDA`, by cell line
+- formula: `Treatment`
+- treatments are compared to the `Control` group
+
+
+```{r}
+
+for (ii in 1:length(se_list)){ 
+  se <- se_list[[ii]]
+  cellLineName <- names(se_list)[ii]
+  pander(cellLineName)
+  
+  ## -----------------------------------
+  ## Statistical analyses
+
+  form <- ~ se$Treatment 
+  cat("formula: ", as.character(form))
+  design <- model.matrix(form)
+  fitlog <- proDA(assays(se)$log, design = design,
+                          data_is_log_transformed = TRUE,
+                           verbose = FALSE)
+  fitlog$convergence$successful
+  fitlognorm <- proDA(assays(se)$logNorm, design = design,
+                          data_is_log_transformed = TRUE,
+                           verbose = FALSE)
+  fitlognorm$convergence$successful
+  
+  effets <- colnames(design)[colnames(design)!="(Intercept)"]
+  effets_sub <- sub("se\\$Treatment", "",effets)
+  
+  ## log --------------------------------
+  res <- list()
+  for (j in 1:length(effets)){
+    res[[j]] <- test_diff(fitlog, 
+                          contrast = paste0("`",effets[j],"`"),
+                       alternative = "two.sided",
+                       pval_adjust_method = "BH",
+                       sort_by = NULL,
+                       verbose = F) %>%
+      as_tibble() %>% dplyr::rename("lipid" = "name", 
+                             "adj.P.Val" = "adj_pval","logFC" = "diff")
+    res[[j]]$sign <- 0
+    res[[j]]$sign[res[[j]]$logFC>0 &res[[j]]$adj.P.Val<0.05 ] = 1
+    res[[j]]$sign[res[[j]]$logFC<0 &res[[j]]$adj.P.Val<0.05 ] = -1
+  }
+  
+  names(res) <- effets_sub
+  res_log <- res
+  
+  logFCs <- do.call(cbind,sapply(res, function(x) x[,"logFC"]))
+  adj.P.Vals <- do.call(cbind,sapply(res, function(x) x[,"adj.P.Val"]))
+  rownames(logFCs) <- res[[1]]$lipid
+  rownames(adj.P.Vals) <- res[[1]]$lipid
+  
+  VP_log <- list()
+  for (k in 1:length(res)){
+    df <- res[[k]]
+    VP_log[[k]] <- ggplot(df, aes(x = logFC, y = -log10(adj.P.Val),
+                  label = lipid)) +
+      geom_point() +
+      geom_hline(yintercept = -log10(0.05)) +
+      theme(legend.position = "none")+ 
+      ggtitle(paste0(names(res)[k], " - log - ",cellLineName))
+  }
+  # VP_log
+   
+  
+  ## lognorm --------------------------------
+  res <- list()
+  for (j in 1:length(effets)){
+    res[[j]] <- test_diff(fitlognorm, 
+                          contrast = paste0("`",effets[j],"`"),
+                       alternative = "two.sided",
+                       pval_adjust_method = "BH",
+                       sort_by = NULL,
+                       verbose = F) %>%
+      as_tibble() %>% dplyr::rename("lipid" = "name", 
+                             "adj.P.Val" = "adj_pval","logFC" = "diff")
+    res[[j]]$sign <- 0
+    res[[j]]$sign[res[[j]]$logFC>0 &res[[j]]$adj.P.Val<0.05 ] = 1
+    res[[j]]$sign[res[[j]]$logFC<0 &res[[j]]$adj.P.Val<0.05 ] = -1
+  }
+  names(res) <- effets_sub
+  res_lognorm <- res
+  
+  logFCs <- do.call(cbind,sapply(res, function(x) x[,"logFC"]))
+  adj.P.Vals <- do.call(cbind,sapply(res, function(x) x[,"adj.P.Val"]))
+  
+  rownames(logFCs) <- res[[1]]$lipid
+  rownames(adj.P.Vals) <- res[[1]]$lipid
+  
+  colnames(logFCs) <- sub("\\.logFC","",colnames(logFCs))
+  colnames(adj.P.Vals) <- sub("\\.adj.P.Val","",colnames(adj.P.Vals))
+  
+  
+  DT::datatable(cbind(round(logFCs,3), 
+                      format(adj.P.Vals, digits=2)))
+  
+  VP_logNorm <- list()
+  for (k in 1:length(res)){
+    df <- res[[k]]
+    VP_logNorm[[k]] <- ggplot(df, aes(x = logFC, y = -log10(adj.P.Val),
+                  label = lipid)) +
+      geom_point() +
+      geom_hline(yintercept = -log10(0.05)) +
+      theme(legend.position = "none")+ 
+      ggtitle(paste0(names(res)[k], " - lognorm - ",cellLineName))
+  }
+  # VP_logNorm
+  
+  for (i in 1:length(VP_logNorm)){
+    
+    print(VP_log[[i]] + VP_logNorm[[i]])
+    
+    # up
+    ll <- list(log = res_log[[i]]$lipid[res_log[[i]]$sign==1], 
+    lognorm = res_lognorm[[i]]$lipid[res_lognorm[[i]]$sign==1])
+    if (prod(sapply(ll, length))>0){
+      plot(Venn(ll))
+    }
+    
+    # down
+    ll <- list(log = res_log[[i]]$lipid[res_log[[i]]$sign==-1], 
+    lognorm = res_lognorm[[i]]$lipid[res_lognorm[[i]]$sign==-1])
+    if (prod(sapply(ll, length))>0){
+      plot(Venn(ll))
+    }
+  }
+  
+  pander("Compare across conditions (log)")
+  
+  df <- do.call(cbind,sapply(res_log, function(x) x[,"sign"]))
+  
+  # upregulated and significant
+  pander("upregulated and significant")
+  us <- df %>% as.data.frame() %>% dplyr::mutate_all(~ifelse(.x==1,1,0))
+  if(sum(us>0)){
+    UpSetR::upset(as.data.frame(us), keep.order = TRUE, nsets = ncol(us))%>%
+      print()
+  }
+  
+  # downregulated and significant
+  pander("downregulated and significant")
+  us <- df %>% as.data.frame() %>% dplyr::mutate_all(~ifelse(.x==-1,1,0))
+  if(sum(us>0)){
+     UpSetR::upset(as.data.frame(us), keep.order = TRUE, nsets = ncol(us))%>%
+      print()
+  }
+  
+  pander("logFC comparison")
+  upperfun <- function(data,mapping){
+    ggplot(data = data, mapping = mapping)+
+      geom_point()+
+      geom_abline(intercept=0,slope=1, color="gray")
+  }
+  lowerfun <- function(data,mapping){
+    ggplot(data = data, mapping = mapping)+
+      geom_point()+
+      geom_abline(intercept=0,slope=1, color="gray")
+  }
+  
+  p <- ggpairs(as.data.frame(logFCs),upper = list(continuous = wrap(upperfun)),
+          lower = list(continuous = wrap(lowerfun)),
+          diag = list(continuous = "blankDiag"))
+  p
+  pander("interactive plot")
+  ggplotly(p)
+  
+  pander("ORA (log)")
+  ### ORA (log)
+  
+  ## ORA
+  term2gene <- rowData(se) %>% as.data.frame() %>%
+    rownames_to_column("lipid") %>% 
+    select(c("Lipid_Class","lipid"))
+  
+  for (i in 1:length(VP_log)){
+      print("======================")
+      print(names(res_log)[i])
+      lipid_DE_up = res_log[[i]]$lipid[res_log[[i]]$sign==1]
+      lipid_DE_down = res_log[[i]]$lipid[res_log[[i]]$sign==-1]
+      
+      # up
+      print("up")
+      if(length(intersect(term2gene$lipid, lipid_DE_up))>0){
+        res_enricher <- enricher(gene = lipid_DE_up, # genes_DE
+                     universe      = res_log[[i]]$lipid,
+                     pAdjustMethod = "BH",
+                     pvalueCutoff  = 1, minGSSize = 1,
+           TERM2GENE = term2gene, qvalueCutoff = 1)
+      
+        res_enricher %>%
+          as_tibble() %>% print()
+      }
+      
+      # down
+      print("down")
+      if(length(intersect(term2gene$lipid, lipid_DE_down))>0){
+        res_enricher <- enricher(gene = lipid_DE_down, # genes_DE
+                     universe      = res_log[[i]]$lipid,
+                     pAdjustMethod = "BH",
+                     pvalueCutoff  = 1, minGSSize = 1,
+           TERM2GENE = term2gene, qvalueCutoff = 1)
+      
+        res_enricher %>%
+          as_tibble() %>% print()
+      }
+  }
+}
+```
+
+
+```{r, eval=FALSE}
+cd <- colData(se)%>% 
+  as.data.frame() %>%
+  rownames_to_column()
+
+pander("up regulated")
+# visualise up regulated
+lips <- df %>% dplyr::filter(sign.RF == 1) %>% pull(lipid)
+assays(se_Species)$log[lips,] %>% as.data.frame() %>%
+  rownames_to_column() %>% pivot_longer(-rowname) %>%
+  left_join(cd, by = c("name"="rowname")) %>% 
+  dplyr::filter(Treatment %in% c("Control", "PunA10"), 
+         Cell.Line == ref_cell_line) %>% 
+  ggplot(aes(y = value, x = Treatment, color=Repetition)) +
+  geom_jitter(height=0) + facet_wrap(~rowname, scale="free_y") + 
+  ggtitle("log and upregulated")
+
+pander("down regulated")
+# visualise down regulated
+lips <- df %>% dplyr::filter(sign.RF == -1) %>% pull(lipid)
+
+assays(se_Species)$log[lips,] %>% as.data.frame() %>%
+  rownames_to_column() %>% pivot_longer(-rowname) %>%
+  left_join(cd, by = c("name"="rowname")) %>% 
+  dplyr::filter(Treatment %in% c("Control", "PunA10"), 
+         Cell.Line == ref_cell_line) %>% 
+  ggplot(aes(y = value, x = Treatment, color=Repetition)) +
+  geom_jitter(height=0) + facet_wrap(~rowname, scale="free_y")+ 
+  ggtitle("log and downregulated")
+
+
+```
+
+
+
+# sessionInfo
+
+```{r}
+sessionInfo()
+```
+

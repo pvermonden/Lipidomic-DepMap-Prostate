@@ -1,0 +1,279 @@
+---
+html_document:
+  code_folding: hide
+  collapsed: yes
+  fig_caption: yes
+  fig_height: 5
+  fig_width: 6
+  highlight: tango
+  number_sections: yes
+  theme: united
+  toc: yes
+  toc_depth: 3
+  toc_float: yes
+author: "P. Vermonden"
+date: "1/28/2023"
+title: "Lipidomic data charts"
+pdf_document:
+  toc: yes
+  toc_depth: '3'
+word_document: default
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+# Installing libraries 
+knitr::opts_chunk$set(echo = TRUE)
+require(devtools)
+require(knitr) 
+require(pander)
+require(pls)
+require(MBXUCL)
+require(ropls)
+require(penalized) 
+require(ggplot2)
+require(readr)
+require(readxl)
+require(dplyr)
+require(ggrepel)
+require(rio)
+require(vctrs)
+require(missMDA)
+require(dplyr)
+require(tidyverse)
+require(SummarizedExperiment)
+require(factoextra)
+```
+
+# Downloading data
+
+```{r data download}
+Data <- read.csv(file = 'Data_prostate.csv', sep=';', dec=',')
+
+colnames(Data)
+
+Data1 <- read_xlsx(path = 'results/R03_prostate.xlsx')
+Data1 <- Data1 %>% column_to_rownames("...1") 
+colnames(Data1)
+
+Data1 = Data1 %>% dplyr::rename(Name = "name", Lipid_Class = "lipid_Class",
+                        LogFC_22RV1 = "logFC_X22RV1_PunA10 - X22RV1_Control",
+                        LogFC_LNCaP = "logFC_LNCaP_PunA10 - LNCaP_Control" ,       
+                        LogFC_PC3 = "logFC_PC3_PunA10 - PC3_Control",
+                        adj_pvalue_22RV1 = "adj_pval_X22RV1_PunA10 - X22RV1_Control",
+                        adj_pvalue_LNCaP ="adj_pval_LNCaP_PunA10 - LNCaP_Control",
+                        adj_pvalue_PC3 ="adj_pval_PC3_PunA10 - PC3_Control")
+
+Data1 = Data1 %>% 
+  select(Name, Lipid_Class, starts_with("LogFC"), 
+         starts_with("adj_pval")) %>% 
+  select(!contains("_int_"))
+
+str(Data1)
+
+Data1 = Data1 %>% 
+  dplyr::mutate(across(.cols = starts_with("adj_pval"),
+                                .fns= ~ -log10(.x),.names = "Log_{.col}")) 
+
+
+Data1$Significant_PC3 = Data1$Significant_LNCaP = Data1$Significant_22RV1 = "N"
+
+
+for (i in c("PC3", "LNCaP","22RV1")){
+  cond = Data1[,paste0("adj_pvalue_",i)]<0.05 & Data1[,paste0("LogFC_",i)]<0
+  Data1[cond,paste0("Significant_",i)] = "ON"
+  cond = Data1[,paste0("adj_pvalue_",i)]<0.05 & Data1[,paste0("LogFC_",i)]>0
+  Data1[cond,paste0("Significant_",i)] = "OP"
+}
+
+
+Data1 %>% 
+  str()
+
+Data[Data$Name=="PC O-40:6",]
+Data1[Data$Name=="PC O-40:6",c("Name","Lipid_Class","LogFC_PC3" ,         
+                               "adj_pvalue_PC3" , "Log_adj_pvalue_PC3"  ,
+                               "Significant_PC3"  ,    "LogFC_22RV1", 
+                               "adj_pvalue_22RV1", "Log_adj_pvalue_22RV1",
+                               "Significant_22RV1"   , "LogFC_LNCaP" ,
+                               "adj_pvalue_LNCaP"    ,"Log_adj_pvalue_LNCaP",
+                               "Significant_LNCaP")]
+# Data1 %>% filter(adj_pvalue_LNCaP<0.05) %>% select(Name, Significant_LNCaP)
+
+Data = Data1
+
+# species with too low values to be considered in the analysis
+tobeexcluded = c("PC O-40:6", "TG 58:6", "TG 58:8",
+                 "TG 55:4","TG 55:5", "TG 50:0",
+                 "PI 33:0","TG 53:1")
+
+Data = Data %>% filter(!Name %in% tobeexcluded)
+```
+
+# Volcano plots
+For each cell line, to get a volcano plot with the log_fold change of the abundance of lipid species. 
+```{r charts}
+
+a <- ggplot(data=Data,aes(x=LogFC_PC3,y=Log_adj_pvalue_PC3,
+                          colour=Significant_PC3,
+                          label=ifelse(Log_adj_pvalue_PC3>1.3010,as.character(Name),''))) + 
+  geom_point(size=2) +
+  scale_color_manual(values=c(N = '#000000',ON = '#22427C',OP = '#A5260A')) +
+  xlim(-8,8) +
+  ylim(0,12.5) +
+  geom_hline(yintercept=1.3010, linetype=2, linewidth=1) +
+  ggtitle("PC3 - CTL vs PunA 10 µM") +
+  labs(x="Log(FC)", y="-Log(adjusted pvalue)") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, size=20,face="bold"),
+        axis.title=element_text(size=19, face="bold"), 
+        axis.text=element_text(size=17), 
+        aspect.ratio = 1.2, panel.grid.major = element_line(colour = "grey70", 
+                                                            linewidth = 0.3), 
+        panel.grid.minor =
+          element_line(colour = "grey70",linewidth=0.2)) +
+  geom_text_repel(size=5)
+
+a
+
+aspect.ratio = 1.2
+ggsave(plot = a, filename ="figures/R04-Lipidomic_PC3.pdf", 
+       device="pdf",height = 7 , width = 7 * aspect.ratio)
+
+b <- ggplot(data=Data,aes(x=LogFC_22RV1,y=Log_adj_pvalue_22RV1,
+                          colour=Significant_22RV1,
+                          label=ifelse(Log_adj_pvalue_22RV1>1.3010,as.character(Name),''))) +
+  geom_point(size=2) +
+  scale_color_manual(values=c(N = '#000000',ON = '#22427C',OP = '#A5260A')) +
+  xlim(-8,8) +
+  ylim(0,12.5) +
+  geom_hline(yintercept=1.3010, linetype=2, linewidth=1) +
+  ggtitle("22RV1 - CTL vs PunA 10 µM") +
+  labs(x="Log(FC)", y="-Log(adjusted pvalue)") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, size=20,face="bold"),
+        axis.title=element_text(size=19, face="bold"), 
+        axis.text=element_text(size=17), 
+        aspect.ratio = 1.2, panel.grid.major = element_line(colour = "grey70", 
+                                                            linewidth = 0.3), 
+        panel.grid.minor = element_line(colour = "grey70",linewidth=0.2)) +
+  geom_text_repel(size=5)
+b
+ggsave(plot = b, filename ="figures/R04-Lipidomic_22RV1.pdf", device="pdf",height = 7 , 
+       width = 7 * aspect.ratio)
+
+
+
+c <- ggplot(data=Data,aes(x=LogFC_LNCaP,y=Log_adj_pvalue_LNCaP,
+                          colour=Significant_LNCaP,
+                          label=ifelse(Log_adj_pvalue_LNCaP>1.3010,as.character(Name),''))) + 
+  geom_point(size=2) +
+  scale_color_manual(values=c(N = '#000000',ON = '#22427C',OP = '#A5260A')) +
+  xlim(-8,8) +
+  ylim(0,12.5) +
+  geom_hline(yintercept=1.3010, linetype=2, linewidth=1) +
+  ggtitle("LNCaP - CTL vs PunA 10 µM") +
+  labs(x="Log(FC)", y="-Log(adjusted pvalue)") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, size=20,face="bold"),
+        axis.title=element_text(size=19, face="bold"), 
+        axis.text=element_text(size=17), aspect.ratio = 1.2, 
+        panel.grid.major = element_line(colour = "grey70", linewidth = 0.3), 
+        panel.grid.minor = element_line(colour = "grey70",linewidth=0.2)) +
+  geom_text_repel(size=5)
+c
+ggsave(plot = c, filename ="figures/R04-Lipidomic_LNCaP.pdf", device="pdf",
+       height = 7 , width = 7 * aspect.ratio)
+
+```
+
+
+# Principal component analysis 
+Code from the data of `R02_prostate`. Data that are used for the PCA are the abundances of lipid species that have been log-transformed and not normalized, while taking into account the imputation of missing data.
+
+```{r PCA based on all lipid species - cell line separation}
+
+# path <- "processed_data/R02_prostate.xlsx"
+# excel_sheets(path)
+
+# # reading data from all sheets of the R02_prostate file
+# se_data <- readxl::read_xlsx(path, sheet = "assay_log2") %>% 
+#   column_to_rownames("...1")
+# se_col <- readxl::read_xlsx(path, sheet = "colData")%>% 
+#   column_to_rownames("...1")
+# se_col <- readxl::read_xlsx(path, sheet = "colData")%>% 
+#   column_to_rownames("...1")
+
+load("processed_data/R02_se_prostate.rda")
+se_Species = se
+
+# renaming all the rows by the lipid species that were imported as a first column instead of column titles
+# se_data <- column_to_rownames(se_data,var='name')
+
+# creating a connected table with the main data and the information about cell lines 
+# se_Species <- SummarizedExperiment::SummarizedExperiment(assays = as.matrix(se_data),
+#                                                          rowData = se_data,
+#                                                         colData = se_col)
+
+# based on observed lipids across all cell lines
+cd = colData(se_Species) %>% as.data.frame() %>% 
+  rownames_to_column("name")
+rd <- rowData(se_Species) %>% as.data.frame() %>% 
+  rownames_to_column("name")
+
+se_filtered = se_Species
+rd_filtered <- rd
+
+# creating the data for PCA and imputing the missing values and NaN
+dat_pca <- t(assay(se_Species, i = 2))
+
+if (sum(is.na(dat_pca)) > 0){
+  # impute missing values 
+  message('imputing missing values for PCA')
+  nb = estim_ncpPCA(dat_pca,ncp.max=5)
+  print("criterion: ")
+  print(nb$criterion)
+  print("ncp: ")
+  print(nb$ncp)
+  res.imp = imputePCA(dat_pca,ncp=nb$ncp, scale=FALSE)
+  dat_pca <- res.imp$completeObs
+}
+
+# packages to be added to be allowed to do the PCA chart 
+#library("devtools")
+#install_github("kassambara/factoextra")
+
+
+# pareto scaling - to center and scale the data for the PCA ; prcomp defines an element of PCA on which the chart can be done
+res_pca <- dat_pca %>%
+    prcomp(scale = FALSE, center = TRUE) 
+
+PCA_chart <- fviz_pca_ind(res_pca,habillage = se_Species$Cell.Line, 
+                 title = "PCA scores", geom=c("point","text"),
+                 axes = c(1,2), palette = c("#bf6027","#a02c4c","#1d4e61"), 
+                 label="none", addEllipses = TRUE,
+                 pointsize = 3, labelsize = 2) +
+              labs(x="PC1 (53.6%)", y="PC2 (20.9%)") +
+              theme(plot.title = element_text(hjust = 0.5, size=20,face="bold"),
+                    axis.title=element_text(size=19, face="bold"), 
+                    axis.text=element_text(size=17), 
+                    aspect.ratio = 0.9, 
+                    panel.grid.major = element_line(colour = "grey70", linewidth = 0.3),
+                    panel.grid.minor = element_line(colour = "grey70",linewidth=0.2),
+                    legend.text=element_text(size=18), legend.title=element_blank()) +
+              xlim(-50,50) +
+              ylim(-30,30)
+
+PCA_chart
+
+ggsave(plot = PCA_chart, filename ="figures/R04-PCA_chart.pdf", 
+       device="pdf",height = 7 , width = 7 * aspect.ratio)
+
+```
+
+# sessionInfo
+```{r}
+sessionInfo()
+```
+
